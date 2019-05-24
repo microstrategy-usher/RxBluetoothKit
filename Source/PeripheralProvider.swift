@@ -18,15 +18,14 @@ class PeripheralProvider {
     /// - parameter peripheral: Peripheral for which to provide delegate wrapper
     /// - returns: Delegate wrapper for specified peripheral.
     func provideDelegateWrapper(for peripheral: CBPeripheral) -> CBPeripheralDelegateWrapper {
-        if let delegateWrapper = delegateWrappersBox.read({ $0[peripheral.uuidIdentifier] }) {
-            return delegateWrapper
-        } else {
-            delegateWrappersBox.compareAndSet(
-                compare: { $0[peripheral.uuidIdentifier] == nil },
-                set: { $0[peripheral.uuidIdentifier] = CBPeripheralDelegateWrapper()}
-            )
-            return delegateWrappersBox.read({ $0[peripheral.uuidIdentifier]! })
-        }
+        let delegateWrapper = delegateWrappersBox.read({ $0[peripheral.uuidIdentifier] })
+            ?? CBPeripheralDelegateWrapper()
+        
+        delegateWrappersBox.compareAndSet(
+            compare: { $0[peripheral.uuidIdentifier] == nil },
+            set: { $0[peripheral.uuidIdentifier] = delegateWrapper }
+        )
+        return delegateWrapper
     }
 
     /// Provides `Peripheral` for specified `CBPeripheral`.
@@ -43,26 +42,38 @@ class PeripheralProvider {
             return createAndAddToBox(cbPeripheral, manager: centralManager)
         }
     }
+    
+    /// Provides a way to clear cache
+    func clearCache() {
+        peripheralsBox.writeSync {
+            $0.removeAll()
+        }
+        delegateWrappersBox.writeSync {
+            $0.removeAll()
+        }
+    }
 
     fileprivate func createAndAddToBox(_ cbPeripheral: CBPeripheral, manager: CentralManager) -> Peripheral {
+        let newPeripheral = find(cbPeripheral) ?? new(peripheral: cbPeripheral, manager: manager)
         peripheralsBox.compareAndSet(
             compare: { peripherals in
                 return !peripherals.contains(where: { $0.peripheral == cbPeripheral })
             },
-            set: { [weak self] peripherals in
-                guard let strongSelf = self else { return }
-                let delegateWrapper = strongSelf.provideDelegateWrapper(for: cbPeripheral)
-                let newPeripheral = Peripheral(
-                    manager: manager,
-                    peripheral: cbPeripheral,
-                    delegateWrapper: delegateWrapper
-                )
+            set: { peripherals in
                 peripherals.append(newPeripheral)
             }
         )
-        return peripheralsBox.read { peripherals in
-            return peripherals.first(where: { $0.peripheral == cbPeripheral })!
-        }
+        return newPeripheral
+    }
+    
+    fileprivate func new(peripheral cbPeripheral: CBPeripheral,
+                         manager: CentralManager) -> Peripheral {
+        let delegateWrapper = provideDelegateWrapper(for: cbPeripheral)
+        return Peripheral(
+            manager: manager,
+            peripheral: cbPeripheral,
+            delegateWrapper: delegateWrapper
+        )
     }
 
     fileprivate func find(_ cbPeripheral: CBPeripheral) -> Peripheral? {
